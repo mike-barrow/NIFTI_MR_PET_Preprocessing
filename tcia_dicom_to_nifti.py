@@ -19,36 +19,54 @@ import shutil
 import nilearn.image
 from tqdm import tqdm
 
+def fast_scandir(dirname):
+    subfolders= [f.path for f in os.scandir(dirname) if f.is_dir()]
+    #Seems not needed to go below one directory level.
+    #for dirname in list(subfolders):
+    #    subfolders.extend(fast_scandir(dirname))
+    return subfolders
 
 def find_studies(path_to_data):
     # find all studies
     dicom_root = plb.Path(path_to_data)
+    """
     patient_dirs = list(dicom_root.glob('*'))
-
     study_dirs = []
-
     for dir in patient_dirs:
         sub_dirs = list(dir.glob('*'))
         #print(sub_dirs)
         study_dirs.extend(sub_dirs)
         
         #dicom_dirs = dicom_dirs.append(dir.glob('*'))
+    """
+    patient_dirs = [plb.Path(x) for x in fast_scandir(dicom_root)]
+
+    #MB
+    return patient_dirs
+
+    study_dirs = []
+
+    for d in patient_dirs:
+        dd = [plb.Path(x) for x in fast_scandir(d)]
+        study_dirs.extend(dd)
+
+
     return study_dirs
 
-
+#where a study is a patient
 def identify_modalities(study_dir):
     # identify CT, PET and mask subfolders and return dicitionary of modalities and corresponding paths, also return series ID, output is a dictionary
     study_dir = plb.Path(study_dir)
-    sub_dirs = list(study_dir.glob('*'))
+    sub_dirs = [plb.Path(x) for x in fast_scandir(study_dir)]#list(study_dir.glob('*'))
 
     modalities = {}
 
-    for dir in sub_dirs:
-        first_file = next(dir.glob('*.dcm'))
+    for dir_ in sub_dirs:
+        first_file = next(dir_.glob('*.dcm'))
         ds = pydicom.dcmread(str(first_file))
         #print(ds)
         modality = ds.Modality
-        modalities[modality] = dir
+        modalities[modality] = dir_
     
     modalities["ID"] = ds.StudyInstanceUID
     return modalities
@@ -195,21 +213,31 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         nii_out_path = nii_out_path/study_dir.name
         os.makedirs(nii_out_path, exist_ok=True)
 
-        ct_dir = modalities["CT"]
+        ct_dir = modalities["MR"]#ct_dir = modalities["CT"]
         dcm2nii_CT(ct_dir, nii_out_path)
 
         pet_dir = modalities["PT"]
         dcm2nii_PET(pet_dir, nii_out_path)
 
-        seg_dir = modalities["SEG"]
-        dcm2nii_mask(seg_dir, nii_out_path)
+        if 'SEG' in modalities:
+            seg_dir = modalities["SEG"]
+            dcm2nii_mask(seg_dir, nii_out_path)
+        else:
+            print("TODO: copy segmentation .ni.gz if no segmentation modality in patient directory.")
 
         resample_ct(nii_out_path)
 
 
 if __name__ == "__main__":
-    path_to_data = plb.Path(sys.argv[1])  # path to downloaded TCIA DICOM database, e.g. '.../FDG-PET-CT-Lesions/'
-    nii_out_root = plb.Path(sys.argv[2])  # path to the to be created NiFTI files, e.g. '...tcia_nifti/FDG-PET-CT-Lesions/')
+    #path_to_data = plb.Path(sys.argv[1])  # path to downloaded TCIA DICOM database, e.g. '.../FDG-PET-CT-Lesions/'
+    #nii_out_root = plb.Path(sys.argv[2])  # path to the to be created NiFTI files, e.g. '...tcia_nifti/FDG-PET-CT-Lesions/')
+
+    #Debug:
+    path_to_data = plb.Path("/home/king/workspace/Lymphoma_Data_Cache/baseline_samples")  #where /IBMCHW001BL is the first patient...
+    nii_out_root = plb.Path("/home/king/workspace/Lymphoma_Data_Cache/SergiosModelTestData")
+
+    #our series have funny spacing in last image. Dunno why. fix here: https://github.com/icometrix/dicom2nifti/issues/36
+    dicom2nifti.settings.disable_validate_slice_increment()
 
     study_dirs = find_studies(path_to_data)
     convert_tcia_to_nifti(study_dirs, nii_out_root)
