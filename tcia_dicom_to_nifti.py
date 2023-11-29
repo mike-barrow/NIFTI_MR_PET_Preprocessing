@@ -177,6 +177,12 @@ def tcia_to_nifti(tcia_path, nii_out_path, modality='CT'):
     elif modality == 'SEG':
         dcm2nii_mask(tcia_path, nii_out_path)
 
+#IBM version
+#IBM baseline scans were annotead using ITK SNAP, where the annotations were saved as nii.gz files,
+#Unlike the flow of Sergios' work. A special case is needed to handle them and create a dataset.
+def IBMnii_maskprocess(mask_nii_path, nii_out_path):
+    mask_nii = list(mask_nii_path.glob('*.nii.gz'))[0]
+    shutil.copy(mask_nii, nii_out_path/'SEG.nii.gz')
 
 def tcia_to_nifti_study(study_path, nii_out_path):
     # conversion for a single study
@@ -223,7 +229,10 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
             seg_dir = modalities["SEG"]
             dcm2nii_mask(seg_dir, nii_out_path)
         else:
-            print("TODO: copy segmentation .ni.gz if no segmentation modality in patient directory.")
+            if str(study_dir).__contains__("IBM"):
+                print("IBM study patient process.")
+                IBMnii_maskprocess(study_dir,nii_out_path)
+
 
         resample_ct(nii_out_path)
 
