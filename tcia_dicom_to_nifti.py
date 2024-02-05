@@ -18,13 +18,18 @@ import sys
 import shutil
 import nilearn.image
 from tqdm import tqdm
+import re
 
+def glob_re(pattern, strings):
+    return filter(re.compile(pattern).match, strings)
 
 def find_studies(path_to_data):
     # find all studies
     dicom_root = plb.Path(path_to_data)
     patient_dirs = list(dicom_root.glob('*'))
-
+    #DEBUG
+    return patient_dirs
+    #END DEBUG
     study_dirs = []
 
     for dir in patient_dirs:
@@ -44,15 +49,37 @@ def identify_modalities(study_dir):
     modalities = {}
 
     for dir in sub_dirs:
-        first_file = next(dir.glob('*.dcm'))
-        ds = pydicom.dcmread(str(first_file))
-        #print(ds)
-        modality = ds.Modality
-        modalities[modality] = dir
+        if next(dir.glob('*.dcm'),False):
+            first_file = next(dir.glob('*.dcm'))
+            ds = pydicom.dcmread(str(first_file))
+            #print(ds)
+            modality = ds.Modality
+            modalities[modality] = dir
+            modalities["ID"] = ds.StudyInstanceUID  #HACK see below hack why this is here.
+        elif next(dir.glob('*.nii.gz'),False):                  #HACK we should not assume labels. have to rn.
+            modalities['SEGnii'] = dir 
+        elif next(glob_re(r"([^\.])",os.listdir(dir)),False):     #HACK our dataset has a bunch of files without dcm ext
+            first_file = next(dir.glob('*'))
+            ds = pydicom.dcmread(str(first_file))
+            #print(ds)
+            modality = ds.Modality
+            modalities[modality] = dir
+            modalities["ID"] = ds.StudyInstanceUID           
     
-    modalities["ID"] = ds.StudyInstanceUID
+    #modalities["ID"] = ds.StudyInstanceUID
     return modalities
 
+def dcm2nii_MR(MR_dcm_path, nii_out_path):
+    # conversion of MR DICOM (in the MR_dcm_path) to nifti and save in nii_out_path
+    with tempfile.TemporaryDirectory() as tmp: #convert MR
+        tmp = plb.Path(str(tmp))
+        # convert dicom directory to nifti
+        # (store results in temp directory)
+        dicom2nifti.convert_directory(MR_dcm_path, str(tmp), 
+                                      compression=True, reorient=True)
+        nii = next(tmp.glob('*nii.gz'))
+        # copy niftis to output folder with consistent naming
+        shutil.copy(nii, nii_out_path/'T1.nii.gz')
 
 def dcm2nii_CT(CT_dcm_path, nii_out_path):
     # conversion of CT DICOM (in the CT_dcm_path) to nifti and save in nii_out_path
@@ -69,7 +96,7 @@ def dcm2nii_CT(CT_dcm_path, nii_out_path):
 
 def dcm2nii_PET(PET_dcm_path, nii_out_path):
     # conversion of PET DICOM (in the PET_dcm_path) to nifti (and SUV nifti) and save in nii_out_path
-    first_pt_dcm = next(PET_dcm_path.glob('*.dcm'))
+    first_pt_dcm = next(PET_dcm_path.glob('*'))#next(PET_dcm_path.glob('*.dcm'))
     suv_corr_factor = calculate_suv_factor(first_pt_dcm)
 
     with tempfile.TemporaryDirectory() as tmp: #convert PET
@@ -133,16 +160,40 @@ def dcm2nii_mask(mask_dcm_path, nii_out_path):
     
     # return mask as nifti object
     mask_out = nib.Nifti1Image(mask_array, pet_affine)
-    nib.save(mask_out, nii_out_path/'SEG.nii.gz')   
-    
+    nib.save(mask_out, nii_out_path/'SEG.nii.gz')
 
+#for existing masks in nii.gz, just move them. They have been co-registered a long time ago.
+def process_existing_mask(mask_nii_in_path, nii_out_path):
+    src_nii_gz = list(mask_nii_in_path.glob('*.nii.gz'))[0]
+    shutil.copy2(str(src_nii_gz),str(nii_out_path/'SEG.nii.gz'))   
+    
+#TODO this down sampling is a bit brutal since PET is lower resolution than anything (mask and MR)
 def resample_ct(nii_out_path):
-    # resample CT to PET and mask resolution
+    # resample CT to PET resolution
+    if not os.path.isfile(nii_out_path/'CT.nii.gz'):
+        return      #no CT
     ct   = nib.load(nii_out_path/'CT.nii.gz')
     pet  = nib.load(nii_out_path/'PET.nii.gz')
     CTres = nilearn.image.resample_to_img(ct, pet, fill_value=-1024)
     nib.save(CTres, nii_out_path/'CTres.nii.gz')
 
+def resample_mr(nii_out_path):
+    # resample CT to PET resolution
+    if not os.path.isfile(nii_out_path/'T1.nii.gz'):
+        return      #no MR
+    mr   = nib.load(nii_out_path/'T1.nii.gz')
+    pet  = nib.load(nii_out_path/'PET.nii.gz')
+    CTres = nilearn.image.resample_to_img(mr, pet, fill_value=-1024)
+    nib.save(CTres, nii_out_path/'T1res.nii.gz')
+
+def resample_mask(nii_out_path):
+    # resample CT to PET resolution
+    if not os.path.isfile(nii_out_path/'SEG.nii.gz'):
+        return      #no Mask (impossible?)
+    seg   = nib.load(nii_out_path/'SEG.nii.gz')
+    pet  = nib.load(nii_out_path/'PET.nii.gz')
+    CTres = nilearn.image.resample_to_img(seg, pet, fill_value=0)
+    nib.save(CTres, nii_out_path/'SEGres.nii.gz')
 
 def tcia_to_nifti(tcia_path, nii_out_path, modality='CT'):
     # conversion for a single file
@@ -158,8 +209,12 @@ def tcia_to_nifti(tcia_path, nii_out_path, modality='CT'):
         dcm2nii_PET(tcia_path, nii_out_path)
     elif modality == 'SEG':
         dcm2nii_mask(tcia_path, nii_out_path)
+        resample_mask(nii_out_path)
+    elif modality == 'SEGnii':
+        process_existing_mask(tcia_path, nii_out_path)
+        resample_mask(nii_out_path)
 
-
+#TODO this is not patched and also unclear why it exists.
 def tcia_to_nifti_study(study_path, nii_out_path):
     # conversion for a single study
     # creates NIfTI files for one patient
@@ -174,13 +229,21 @@ def tcia_to_nifti_study(study_path, nii_out_path):
     ct_dir = modalities["CT"]
     dcm2nii_CT(ct_dir, nii_out_path)
 
+    mr_dir = modalities["MR"]
+    dcm2nii_MR(mr_dir, nii_out_path)
+
     pet_dir = modalities["PT"]
     dcm2nii_PET(pet_dir, nii_out_path)
 
     seg_dir = modalities["SEG"]
     dcm2nii_mask(seg_dir, nii_out_path)
 
+    seg_nii_dir = modalities["SEGnii"]
+    process_existing_mask(seg_nii_dir, nii_out_path)
+
     resample_ct(nii_out_path)
+    resample_mr(nii_out_path)
+    resample_mask(nii_out_path)
 
 
 def convert_tcia_to_nifti(study_dirs,nii_out_root):
@@ -193,22 +256,41 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         modalities = identify_modalities(study_dir)
         nii_out_path = plb.Path(nii_out_root/study_dir.parent.name)
         nii_out_path = nii_out_path/study_dir.name
+
+
         os.makedirs(nii_out_path, exist_ok=True)
 
-        ct_dir = modalities["CT"]
-        dcm2nii_CT(ct_dir, nii_out_path)
+        if 'CT' in modalities:
+            ct_dir = modalities["CT"]
+            dcm2nii_CT(ct_dir, nii_out_path)
 
-        pet_dir = modalities["PT"]
-        dcm2nii_PET(pet_dir, nii_out_path)
+        #TODO more refined for DWI T1, T2, etc.
+        if 'MR' in modalities:
+            mr_dir = modalities["MR"]
+            dcm2nii_MR(mr_dir, nii_out_path)
 
-        seg_dir = modalities["SEG"]
-        dcm2nii_mask(seg_dir, nii_out_path)
+        if 'PT' in modalities:
+            pet_dir = modalities["PT"]
+            dcm2nii_PET(pet_dir, nii_out_path)
+
+        if 'SEG' in modalities:
+            seg_dir = modalities["SEG"]
+            dcm2nii_mask(seg_dir, nii_out_path)
+
+        #TODO deal with existing nii masks.
+        if 'SEGnii' in modalities:
+            seg_nii_dir = modalities["SEGnii"]
+            process_existing_mask(seg_nii_dir, nii_out_path)
 
         resample_ct(nii_out_path)
+        resample_mr(nii_out_path)
+        resample_mask(nii_out_path)
+        
 
 if __name__ == "__main__":
     path_to_data = plb.Path(sys.argv[1])  # path to downloaded TCIA DICOM database, e.g. '.../FDG-PET-CT-Lesions/'
     nii_out_root = plb.Path(sys.argv[2])  # path to the to be created NiFTI files, e.g. '...tcia_nifti/FDG-PET-CT-Lesions/')
-
+    
+    dicom2nifti.settings.disable_validate_slice_increment() #Do not know if this will mess things up but a problem for Case S1_2 at least
     study_dirs = find_studies(path_to_data)
     convert_tcia_to_nifti(study_dirs, nii_out_root)
