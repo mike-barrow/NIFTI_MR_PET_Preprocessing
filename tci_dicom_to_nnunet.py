@@ -46,9 +46,9 @@ def maybe_mkdir_p(directory: str) -> None:
     os.makedirs(directory, exist_ok=True)
 
 #get all cases from preprocessed folder
-taskname = "Debug"
-tasknumber = "507"
-infolder = "/home/king/Data/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task_504_MICCAI_Test"
+taskname = "T1PETOnly"
+tasknumber = "600"
+infolder = "/home/king/Data/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task600_MICCAI_Data"
 outbase = "/home/king/Data/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task"+tasknumber+"_" + taskname 
 outtr = outbase + "/imagesTr"
 outlb = outbase + "/labelsTr"
@@ -63,7 +63,7 @@ for root,dirs,files in os.walk(infolder):
 CTres = 0
 PET = 1
 
-nval = int(floor(len(cases)*0.2))
+nval = int(floor(len(cases)*0.1)) #TODO DEBUG ONELY
 ntrn = int(len(cases) - nval)
 
 #try to create directories for the dataset
@@ -101,20 +101,20 @@ for i, d in enumerate(cases):
     if i < ntrn:                    #copy files to training folder
         #f = outval
         #print(f'Debug_{i:03d}_{CTres:04d}.nii.gz')
-        fs = d + "/" + os.listdir(d)[3] 
+        fs = d + "/" + os.listdir(d)[2]#MICCAI24, T1#TCIA[3] 
         fd = outtr + f'/{taskname}_{i:03d}_{0:04d}.nii.gz'
         shutil.copy(fs,fd)
-        fs = d + "/" + os.listdir(d)[4] 
+        fs = d + "/" + os.listdir(d)[4]#MICCAI24, SUV#TCIA[4] 
         fd = outtr + f'/{taskname}_{i:03d}_{1:04d}.nii.gz'
         shutil.copy(fs,fd)
-        fs = d + "/" + os.listdir(d)[0] 
+        fs = d + "/" + os.listdir(d)[3]#MICCAI24 seg(res)#TCIA[0] 
         fd = outlb + f'/{taskname}_{i:03d}.nii.gz'
         shutil.copy(fs,fd)
     else:                           #copy files to validation folder 
-        fs = d + "/" + os.listdir(d)[3] 
+        fs = d + "/" + os.listdir(d)[2]#MICCAI24#TCIA[3] 
         fd = outval + f'/{taskname}_{i:03d}_{0:04d}.nii.gz'
         shutil.copy(fs,fd)
-        fs = d + "/" + os.listdir(d)[4] 
+        fs = d + "/" + os.listdir(d)[4]#MICCAI24#TCIA[4] 
         fd = outval + f'/{taskname}_{i:03d}_{1:04d}.nii.gz'
         shutil.copy(fs,fd)
 

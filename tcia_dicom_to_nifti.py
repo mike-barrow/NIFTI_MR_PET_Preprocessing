@@ -19,6 +19,8 @@ import shutil
 import nilearn.image
 from tqdm import tqdm
 import re
+import scipy
+from sklearn.preprocessing import normalize
 
 def glob_re(pattern, strings):
     return filter(re.compile(pattern).match, strings)
@@ -71,12 +73,12 @@ def identify_modalities(study_dir):
 
 def dcm2nii_MR(MR_dcm_path, nii_out_path):
     # conversion of MR DICOM (in the MR_dcm_path) to nifti and save in nii_out_path
-    with tempfile.TemporaryDirectory() as tmp: #convert MR
+    with tempfile.TemporaryDirectory() as tmp: #convert MR       
         tmp = plb.Path(str(tmp))
         # convert dicom directory to nifti
         # (store results in temp directory)
         dicom2nifti.convert_directory(MR_dcm_path, str(tmp), 
-                                      compression=True, reorient=True)
+                                    compression=True, reorient=True)
         nii = next(tmp.glob('*nii.gz'))
         # copy niftis to output folder with consistent naming
         shutil.copy(nii, nii_out_path/'T1.nii.gz')
@@ -98,7 +100,6 @@ def dcm2nii_PET(PET_dcm_path, nii_out_path):
     # conversion of PET DICOM (in the PET_dcm_path) to nifti (and SUV nifti) and save in nii_out_path
     first_pt_dcm = next(PET_dcm_path.glob('*'))#next(PET_dcm_path.glob('*.dcm'))
     suv_corr_factor = calculate_suv_factor(first_pt_dcm)
-
     with tempfile.TemporaryDirectory() as tmp: #convert PET
         tmp = plb.Path(str(tmp))
         # convert dicom directory to nifti
@@ -108,7 +109,6 @@ def dcm2nii_PET(PET_dcm_path, nii_out_path):
         nii = next(tmp.glob('*nii.gz'))
         # copy nifti to output folder with consistent naming
         shutil.copy(nii, nii_out_path/'PET.nii.gz')
-
         # convert pet images to quantitative suv images and save nifti file
         suv_pet_nii = convert_pet(nib.load(nii_out_path/'PET.nii.gz'), suv_factor=suv_corr_factor)
         nib.save(suv_pet_nii, nii_out_path/'SUV.nii.gz')
@@ -148,12 +148,14 @@ def dcm2nii_mask(mask_dcm_path, nii_out_path):
     mask = pydicom.read_file(str(mask_dcm))
     mask_array = mask.pixel_array
     
+    
     # get mask array to correct orientation (this procedure is dataset specific)
     mask_array = np.transpose(mask_array,(2,1,0) )  
     mask_orientation = mask[0x5200, 0x9229][0].PlaneOrientationSequence[0].ImageOrientationPatient
     if mask_orientation[4] == 1:
         mask_array = np.flip(mask_array, 1 )
     
+
     # get affine matrix from the corresponding pet             
     pet = nib.load(str(nii_out_path/'PET.nii.gz'))
     pet_affine = pet.affine
@@ -192,8 +194,16 @@ def resample_mask(nii_out_path):
         return      #no Mask (impossible?)
     seg   = nib.load(nii_out_path/'SEG.nii.gz')
     pet  = nib.load(nii_out_path/'PET.nii.gz')
-    CTres = nilearn.image.resample_to_img(seg, pet, fill_value=0)
-    nib.save(CTres, nii_out_path/'SEGres.nii.gz')
+    #always effs upCTres = nilearn.image.resample_to_img(seg, pet, fill_value=0)
+    aff= pet.affine[0:3,0:3]    #these should be co-registered so eff the 4x4 affine. rescale only.
+    #poo = nilearn.image.resample_img(seg, target_affine=aff, fill_value=0,interpolation='nearest')
+    poo = nilearn.image.resample_img(seg, target_affine=pet.affine, target_shape=pet.shape, fill_value=0,interpolation='nearest')
+    if not poo.shape == pet.shape:
+        CTres = nilearn.image.resample_to_img(poo, pet, fill_value=0,interpolation='nearest')
+        nib.save(CTres, nii_out_path/'SEGres.nii.gz')
+        print(f"{nii_out_path}weird ?")
+    else:
+        nib.save(poo, nii_out_path/'SEGres.nii.gz')
 
 def tcia_to_nifti(tcia_path, nii_out_path, modality='CT'):
     # conversion for a single file
@@ -235,15 +245,15 @@ def tcia_to_nifti_study(study_path, nii_out_path):
     pet_dir = modalities["PT"]
     dcm2nii_PET(pet_dir, nii_out_path)
 
-    seg_dir = modalities["SEG"]
-    dcm2nii_mask(seg_dir, nii_out_path)
+    #seg_dir = modalities["SEG"]
+    #dcm2nii_mask(seg_dir, nii_out_path)
 
-    seg_nii_dir = modalities["SEGnii"]
-    process_existing_mask(seg_nii_dir, nii_out_path)
+    #seg_nii_dir = modalities["SEGnii"]
+    #process_existing_mask(seg_nii_dir, nii_out_path)
 
     resample_ct(nii_out_path)
     resample_mr(nii_out_path)
-    resample_mask(nii_out_path)
+    #resample_mask(nii_out_path)
 
 
 def convert_tcia_to_nifti(study_dirs,nii_out_root):
@@ -256,10 +266,8 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         modalities = identify_modalities(study_dir)
         nii_out_path = plb.Path(nii_out_root/study_dir.parent.name)
         nii_out_path = nii_out_path/study_dir.name
-
-
+        
         os.makedirs(nii_out_path, exist_ok=True)
-
         if 'CT' in modalities:
             ct_dir = modalities["CT"]
             dcm2nii_CT(ct_dir, nii_out_path)
@@ -272,25 +280,259 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         if 'PT' in modalities:
             pet_dir = modalities["PT"]
             dcm2nii_PET(pet_dir, nii_out_path)
-
+        
+        """
         if 'SEG' in modalities:
             seg_dir = modalities["SEG"]
             dcm2nii_mask(seg_dir, nii_out_path)
+            resample_mask(nii_out_path)
 
         #TODO deal with existing nii masks.
         if 'SEGnii' in modalities:
             seg_nii_dir = modalities["SEGnii"]
             process_existing_mask(seg_nii_dir, nii_out_path)
-
+            resample_mask(nii_out_path)
+        """
         resample_ct(nii_out_path)
         resample_mr(nii_out_path)
-        resample_mask(nii_out_path)
-        
+
+def closest_unitary(A): 
+    """ Calculate the unitary matrix U that is closest with respect to the 
+        operator norm distance to the general matrix A. 
+ 
+        Return U as a numpy matrix. 
+    """ 
+    V, __, Wh = scipy.linalg.svd(A) 
+    U = np.matrix(V.dot(Wh)) 
+    return U 
+
+def compute_rot(A): 
+    """ Calculate the unitary matrix U that is closest with respect to the 
+        operator norm distance to the general matrix A. 
+ 
+        Return U as a numpy matrix. 
+    """ 
+    V, __, Wh = scipy.linalg.svd(A) 
+    R = V*Wh 
+    return R 
+from scipy.spatial.transform import Rotation as R
+
+
+def affine2d(ds):
+    F11, F21, F31 = ds.ImageOrientationPatient[3:]
+    F12, F22, F32 = ds.ImageOrientationPatient[:3]
+
+    dr, dc = ds.PixelSpacing
+    Sx, Sy, Sz = ds.ImagePositionPatient
+
+    return np.array(
+        [
+            [F11 * dr, F12 * dc, 0, Sx],
+            [F21 * dr, F22 * dc, 0, Sy],
+            [F31 * dr, F32 * dc, 0, Sz],
+            [0, 0, 0, 1]
+        ]
+    )
+
+#debug
+#for some reason, some nifti files get created with "non orthonormal" transfor matrices for the MR.
+#who cares? well, the nifti readers apparently. The fix seems to be to remove translation from MR and subtract from PET (give common offset).
+#Tried so many other things with no luck.
+def fixxfrm(nii_path,nii_file):
+    #idea 6702-500 just subtract affine part of transform into PET. Zero out affine in MR
+    mr = nib.load(str(nii_path/'T1.nii.gz'))
+    mraffine = mr.affine
+
+    pet = nib.load(str(nii_path/'PET.nii.gz')) 
+    petaffine = pet.affine
+    petaffine[:3,3] = petaffine[:3,3] - mraffine[:3,3] #subtract MR translation from PET translation  
+    petd = np.asanyarray(pet.dataobj)
+    nipet = nib.Nifti1Image(petd,petaffine)   
+    nib.save(nipet, nii_path/('fixed_PET.nii.gz'))
+
+    
+    mraffine[:3,3] = [0,0,0]    #nuke MR translation, which fixes non-orthonormal junk when trying to open.
+
+    mrd = np.asanyarray(mr.dataobj)
+    nimr = nib.Nifti1Image(mrd,mraffine)
+    nib.save(nimr, nii_path/('fixed_MR.nii.gz'))
+
+
+    return
+    #idea 6702-438 just construct affine from dicom header yourself.
+    #dicomp = plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_33_BL/ST_S3_33_BL_MR/')
+    #ds = pydicom.dcmread(str(dicomp))
+    mr = nib.load(str(nii_path/'T1.nii.gz'))
+    #redux rotations....
+    rot = R.from_matrix(mr.affine[:3,:3])
+    #mraffine = mr.affine
+    mraffine = np.zeros([4,4])
+    mraffine[:3,:3] = rot.as_matrix() 
+    mraffine[3,3] = 1 
+    #bummer with orthonormal
+
+    mraffine = normalize(mraffine, axis=0, norm='l1')#most important step seems to do with l1norm of  translation part...
+    #fix scale
+    mraffine[0,0]*=0.7422#x (y deta) 0.7422 vs 2.60417
+    mraffine[1,1]*=0.7422#y (x delta)0.7422 vs 2.60417
+    mraffine[2,2]*=1.30143 #z (spacing delta)1.30143 vs 2.78 
+    #fix translation
+    #re-introduce translation (ratios seem messed up some how)
+    mraffine[:,3] = mr.affine[:,3]
+    mraffine[0,3]/=mr.affine[0,0]
+    mraffine[1,3]/=mr.affine[1,1]
+    mraffine[2,3]/=mr.affine[2,2]
+    mraffine[0,3]*=0.7422
+    mraffine[1,3]*=0.7422
+    mraffine[2,3]*=1.30143  
+    #mraffine[3,3] = (-1*sum(mraffine[:3,3])) +1
+
+    mrd = np.asanyarray(mr.dataobj)
+    nimr = nib.Nifti1Image(mrd,mraffine)
+    nib.save(nimr, nii_path/('fixed_MR.nii.gz'))
+
+    pet = nib.load(str(nii_path/'PET.nii.gz')) 
+    rot = R.from_matrix(pet.affine[:3,:3])
+    petaffine = np.zeros([4,4])#pet.affine
+    petaffine[:3,:3] = rot.as_matrix()
+    petaffine[3,3] = 1 
+
+    petaffine = normalize(petaffine, axis=0, norm='l1')#most important step seems to do with l1norm of  translation part...
+    #works without this but is too small...
+    #have to scale the pet by the delta of voxel size
+    petaffine[0,0]*=2.60417#x (y deta) 0.7422 vs 2.60417
+    petaffine[1,1]*=2.60417#y (x delta)0.7422 vs 2.60417
+    petaffine[2,2]*=2.78#z (spacing delta)1.30143 vs 2.78
+    #re-introduce translation (ratios seem messed up some how)
+    #bummer with orthonormal
+    #fix translation
+    #re-introduce translation (ratios seem messed up some how)
+    petaffine[:,3] = pet.affine[:,3]
+    petaffine[0,3]/=pet.affine[0,0]
+    petaffine[1,3]/=pet.affine[1,1]
+    petaffine[2,3]/=pet.affine[2,2]
+    petaffine[0,3]*=2.60417
+    petaffine[1,3]*=2.60417
+    petaffine[2,3]*=2.78 
+    petd = np.asanyarray(pet.dataobj)
+    nipet = nib.Nifti1Image(petd,petaffine)   
+    nib.save(nipet, nii_path/('fixed_PET.nii.gz'))
+
+    return
+    #idea 5702-438
+    mr = nib.load(str(nii_path/'T1.nii.gz'))
+    #redux rotations....
+    rot = R.from_matrix(mr.affine[:3,:3])
+    mraffine = mr.affine
+    mraffine[:3,:3] = rot.as_matrix()
+    mraffine = normalize(mraffine, axis=0, norm='l1')#most important step seems to do with l1norm of  translation part...
+    mrd = np.asanyarray(mr.dataobj)
+    nimr = nib.Nifti1Image(mrd,mraffine)
+    nib.save(nimr, nii_path/('fixed_MR.nii.gz'))
+
+    pet = nib.load(str(nii_path/'PET.nii.gz')) 
+    rot = R.from_matrix(pet.affine[:3,:3])
+    petaffine = pet.affine
+    petaffine[:3,:3] = rot.as_matrix()
+    petaffine = normalize(petaffine, axis=0, norm='l1')#most important step seems to do with l1norm of  translation part...
+    #works without this but is too small...
+    #have to scale the pet by the delta of voxel size
+    petaffine[0,0]*=2.60417/0.7422#x (y deta) 0.7422 vs 2.60417
+    petaffine[1,1]*=2.60417/0.7422#y (x delta)0.7422 vs 2.60417
+    petaffine[2,2]*=2.78/1.30143 #z (spacing delta)1.30143 vs 2.78
+    petd = np.asanyarray(pet.dataobj)
+    nipet = nib.Nifti1Image(petd,petaffine)   
+    nib.save(nipet, nii_path/('fixed_PET.nii.gz'))
+
+    return
+    """
+    #Idea 4567
+    mr = nib.load(str(nii_path/'T1.nii.gz'))
+    pet = nib.load(str(nii_path/'PET.nii.gz'))
+    U = mr.affine[:3,:3]
+    V = normalize(mr.affine[:3,:3], axis=0, norm='l1') #will be the new affine for mr
+    U1 = np.linalg.inv(U)                        #use to compyte T for pet
+    T = V*U1
+    #take l1 norm of mr
+    #compute the xform to go from original MR affine to l1 norm
+    #apply the xform to the PET affine
+    #they should both be in the same space
+    mraffine = mr.affine
+    mraffine[:3,:3] = V[:3,:3]
+    petaffine = pet.affine
+    petaffine[:3,:3] =  T*pet.affine[:3,:3]
+    petd = np.asanyarray(pet.dataobj)
+    nipet = nib.Nifti1Image(petd,petaffine)
+    nib.save(nipet, nii_path/('fixed_PET.nii.gz'))
+    """
+    mrd = np.asanyarray(mr.dataobj)
+    nimr = nib.Nifti1Image(mrd,mraffine)
+    nib.save(nimr, nii_path/('fixed_MR.nii.gz'))    
+    return
+    #wway to fix this seems to be to give both images the same diagonal in their affine matrix. Just works. Shrug.
+    mr = nib.load(str(nii_path/'T1.nii.gz'))
+    pet = nib.load(str(nii_path/'PET.nii.gz'))
+    petaffine = np.zeros([4,4])
+    np.fill_diagonal(petaffine,pet.affine.diagonal())
+    #mraffine = np.zeros([4,4])
+    #np.fill_diagonal(mraffine,mr.affine.diagonal())
+    mraffine = mr.affine
+    mraffine[1,0] = 0; mraffine[2,0]=0; mraffine[2,1]=0
+    mraffine[0,1] = 0; mraffine[0,2]=0; mraffine[2,2]=0
+    mrd = np.asanyarray(mr.dataobj)
+    petd = np.asanyarray(pet.dataobj)
+    nipet = nib.Nifti1Image(petd,petaffine)
+    nimr = nib.Nifti1Image(mrd,mraffine)
+    nib.save(nipet, nii_path/('fixed_PET.nii.gz'))
+    nib.save(nimr, nii_path/('fixed_MR.nii.gz'))
+    return
+
+    mr = nib.load(str(nii_path/nii_file))
+    d = np.asanyarray(mr.dataobj)
+    #ni = nib.Nifti1Image(d,np.identity(4))#nuke the old affine
+    ni = nib.Nifti1Image(d,closest_unitary(mr.affine))#try to correct old affine
+    #Try to correct the affine transform.
+    nib.save(ni, nii_path/('fixed_'+str(nii_file)))
+
+
+#keepout list, current cases known to have bad image data in the first place
+blacklist = ['ST_S1_8','ST_S1_14','ST_S1_50','ST_S2_104','ST_S2_110','ST_S3_29','ST_S3_37' ,'ST_S3_38', #resample fail
+             'ST_S1_21','ST_S1_22','ST_S1_17','ST_S1_40', 'ST_S1_89', 'ST_S1_88','ST_S3_29','ST_S1_31','ST_S1_23','ST_S1_37','ST_S1_45','ST_S1_16'] #label fail
+
 
 if __name__ == "__main__":
+    
+    bd1 = '/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task600_MICCAI_Data/Lymphoma_Cases_Feb_5_2024/'
+    bd2 = '/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Lyphoma_Dataset_unprocessed/Unlabeled_cases_Feb_5_2024/'
+    fix_dirs = [
+                    plb.Path(bd2+'ST_S3_33_BL'),
+                    plb.Path(bd2+'ST_S3_36_BL'),
+                    plb.Path(bd2+'ST_S3_82_BL'),
+                    plb.Path(bd1+'ST_S1_12_BL'),
+                    plb.Path(bd1+'ST_S1_44_BL'),
+                    plb.Path(bd1+'ST_S3_49_BL'),
+                    plb.Path(bd2+'ST_S3_9_BL')
+                    ]   
+    cpts = [('_MR','T1.nii.gz'),('_PT','PET.nii.gz')]
+    for p in fix_dirs:
+        #for f in cpts:
+        #    fixxfrm(p,f[1])
+        fixxfrm(p,cpts[0][1])
+    exit()
+    
     path_to_data = plb.Path(sys.argv[1])  # path to downloaded TCIA DICOM database, e.g. '.../FDG-PET-CT-Lesions/'
     nii_out_root = plb.Path(sys.argv[2])  # path to the to be created NiFTI files, e.g. '...tcia_nifti/FDG-PET-CT-Lesions/')
     
+    #see: https://github.com/icometrix/dicom2nifti we have bad affine matrices from our inconsistent slice increments. This may help.
     dicom2nifti.settings.disable_validate_slice_increment() #Do not know if this will mess things up but a problem for Case S1_2 at least
-    study_dirs = find_studies(path_to_data)
-    convert_tcia_to_nifti(study_dirs, nii_out_root)
+    #dicom2nifti.settings.enable_resampling()
+    #dicom2nifti.settings.set_resample_spline_interpolation_order(1)
+    #dicom2nifti.settings.set_resample_padding(-1000)
+    #study_dirs = find_studies(path_to_data)
+    candidate_dirs = []
+    for s in study_dirs:
+        if not any([b in str(s) for b in blacklist]):
+            candidate_dirs.append(s)
+    #candidate_dirs = candidate_dirs[31:]
+    candidate_dirs = [plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_33_BL/')]
+    convert_tcia_to_nifti(candidate_dirs, nii_out_root)
