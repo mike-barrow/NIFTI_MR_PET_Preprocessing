@@ -322,7 +322,7 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         if 'T1' in modalities:
             mr_dir = modalities["T1"]
             dcm2nii_MR(mr_dir, nii_out_path,'T1')
-        """    
+            
         if 'T2' in modalities:
             mr_dir = modalities["T2"]
             dcm2nii_MR(mr_dir, nii_out_path,'T2')
@@ -332,7 +332,7 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         if 'DWI2' in modalities:
             mr_dir = modalities["DWI2"]
             dcm2nii_MR(mr_dir, nii_out_path,'DWI2')
-        """
+        
         if 'PET' in modalities:
             pet_dir = modalities["PET"]
             dcm2nii_PET(pet_dir, nii_out_path)
@@ -422,21 +422,25 @@ def fixxfrm(nii_path,nii_file):
     nipet = nib.Nifti1Image(petd,petaffine)   
     nib.save(nipet, nii_path/('SUV.nii.gz'))
 
-    mraffine[:3,3] = [0,0,0]    #nuke MR translation, which fixes non-orthonormal junk when trying to open.
-    mrd = np.asanyarray(mr.dataobj)
-    nimr = nib.Nifti1Image(mrd,mraffine)
-    nib.save(nimr, nii_path/('T1.nii.gz'))
-    """
-    does not work properly
-    mrmods = ['T1.nii.gz','T2.nii.gz','DWI1.nii.gz','DWI2.nii.gz']
+
+    
+    #does not work properly
+    mrmods = ['T2.nii.gz','DWI1.nii.gz','DWI2.nii.gz']#'T1.nii.gz',
     for mf in mrmods:
         mfn = nii_path/mf
         if os.path.isfile(mfn):
-            mr = nib.load(mfn)
-            mrd = np.asanyarray(mr.dataobj)
-            nimr = nib.Nifti1Image(mrd,mraffine)
-            nib.save(nimr, mfn)
-    """
+            _mr = nib.load(mfn)
+            _mrd = np.asanyarray(_mr.dataobj)
+            _mraffine = _mr.affine
+            _mraffine[:3,3] = _mraffine[:3,3] - mraffine[:3,3]
+            _nimr = nib.Nifti1Image(_mrd,_mraffine)
+            #nimr = nib.Nifti1Image(mrd,mraffine)
+            nib.save(_nimr, mfn)
+
+    mraffine[:3,3] = [0,0,0]    #nuke MR translation, which fixes non-orthonormal junk when trying to open.
+    mrd = np.asanyarray(mr.dataobj)
+    nimr = nib.Nifti1Image(mrd,mraffine)
+    nib.save(nimr, nii_path/('T1.nii.gz'))    
     
     #fix annotations for this file (if exists)
     if os.path.isfile(str(nii_path/'SEG.nii.gz')):
