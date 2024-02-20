@@ -55,7 +55,19 @@ def identify_modalities(study_dir):
             first_file = next(dir.glob('*.dcm'))
             ds = pydicom.dcmread(str(first_file))
             #print(ds)
-            modality = ds.Modality
+            #modality = ds.Modality
+            if 'MR' in str(dir) or 'T1' in str(dir):
+                modality = 'T1'
+            elif 'T2' in str(dir):
+                modality = 'T2'
+            elif 'PT' in str(dir):
+                modality = 'PET'
+            elif 'DWI1' in str(dir):
+                modality = 'DWI1'
+            elif 'DWI2' in str(dir):
+                modality = 'DWI2'
+            elif '_A' in str(dir):
+                modality = 'SEG'
             modalities[modality] = dir
             modalities["ID"] = ds.StudyInstanceUID  #HACK see below hack why this is here.
         elif next(dir.glob('*.nii.gz'),False):                  #HACK we should not assume labels. have to rn.
@@ -64,14 +76,26 @@ def identify_modalities(study_dir):
             first_file = next(dir.glob('*'))
             ds = pydicom.dcmread(str(first_file))
             #print(ds)
-            modality = ds.Modality
+            #modality = ds.Modality
+            if 'MR' in str(dir) or 'T1' in str(dir):
+                modality = 'T1'
+            elif 'T2' in str(dir):
+                modality = 'T2'
+            elif 'PT' in str(dir):
+                modality = 'PET'
+            elif 'DWI1' in str(dir):
+                modality = 'DWI1'
+            elif 'DWI2' in str(dir):
+                modality = 'DWI2'
+            elif '_A' in str(dir):
+                modality = 'SEG'
             modalities[modality] = dir
             modalities["ID"] = ds.StudyInstanceUID           
     
     #modalities["ID"] = ds.StudyInstanceUID
     return modalities
 
-def dcm2nii_MR(MR_dcm_path, nii_out_path):
+def dcm2nii_MR(MR_dcm_path, nii_out_path,sequence='T1'):
     # conversion of MR DICOM (in the MR_dcm_path) to nifti and save in nii_out_path
     with tempfile.TemporaryDirectory() as tmp: #convert MR       
         tmp = plb.Path(str(tmp))
@@ -81,7 +105,7 @@ def dcm2nii_MR(MR_dcm_path, nii_out_path):
                                     compression=True, reorient=True)
         nii = next(tmp.glob('*nii.gz'))
         # copy niftis to output folder with consistent naming
-        shutil.copy(nii, nii_out_path/'T1.nii.gz')
+        shutil.copy(nii, nii_out_path/(sequence+'.nii.gz'))
 
 def dcm2nii_CT(CT_dcm_path, nii_out_path):
     # conversion of CT DICOM (in the CT_dcm_path) to nifti and save in nii_out_path
@@ -148,12 +172,13 @@ def dcm2nii_mask(mask_dcm_path, nii_out_path):
     mask = pydicom.read_file(str(mask_dcm))
     mask_array = mask.pixel_array
     
-    
+    """
     # get mask array to correct orientation (this procedure is dataset specific)
     mask_array = np.transpose(mask_array,(2,1,0) )  
     mask_orientation = mask[0x5200, 0x9229][0].PlaneOrientationSequence[0].ImageOrientationPatient
     if mask_orientation[4] == 1:
         mask_array = np.flip(mask_array, 1 )
+    """
     
 
     # get affine matrix from the corresponding pet             
@@ -179,14 +204,34 @@ def resample_ct(nii_out_path):
     CTres = nilearn.image.resample_to_img(ct, pet, fill_value=-1024)
     nib.save(CTres, nii_out_path/'CTres.nii.gz')
 
+def resample(srcf,tgtf,fill_value=-1024):
+    s = nib.load(srcf)
+    t = nib.load(tgtf)
+    ss = nilearn.image.resample_to_img(source_img=s,target_img=t,fill_value=fill_value)
+    outf = srcf.parent/str(srcf.stem.split('.')[0]+'res.nii.gz')
+    nib.save(ss,outf)
+
 def resample_mr(nii_out_path):
     # resample CT to PET resolution
     if not os.path.isfile(nii_out_path/'T1.nii.gz'):
         return      #no MR
-    mr   = nib.load(nii_out_path/'T1.nii.gz')
-    pet  = nib.load(nii_out_path/'PET.nii.gz')
-    CTres = nilearn.image.resample_to_img(mr, pet, fill_value=-1024)
-    nib.save(CTres, nii_out_path/'T1res.nii.gz')
+    #mr   = nib.load(nii_out_path/'T1.nii.gz')
+    #pet  = nib.load(nii_out_path/'PET.nii.gz')
+    #CTres = nilearn.image.resample_to_img(mr, pet, fill_value=-1024)
+    #nib.save(CTres, nii_out_path/'T1res.nii.gz')
+    #check existance of all other types of modality
+    t1f = nii_out_path/'T1.nii.gz'
+    t2f = nii_out_path/'T2.nii.gz'
+    dwi1f = nii_out_path/'DWI1.nii.gz'
+    dwi2f= nii_out_path/'DWI2.nii.gz'
+    ptf = nii_out_path/'PET.nii.gz'
+    MR = [t1f]#,t2f,dwi1f,dwi2f] #does not work until the affine is sorted out
+    for src in MR:
+        if os.path.isfile(src):
+            resample(src,ptf)
+
+        
+
 
 def resample_mask(nii_out_path):
     # resample CT to PET resolution
@@ -266,35 +311,54 @@ def convert_tcia_to_nifti(study_dirs,nii_out_root):
         modalities = identify_modalities(study_dir)
         nii_out_path = plb.Path(nii_out_root/study_dir.parent.name)
         nii_out_path = nii_out_path/study_dir.name
-        
+    
         os.makedirs(nii_out_path, exist_ok=True)
+        
         if 'CT' in modalities:
             ct_dir = modalities["CT"]
             dcm2nii_CT(ct_dir, nii_out_path)
 
         #TODO more refined for DWI T1, T2, etc.
-        if 'MR' in modalities:
-            mr_dir = modalities["MR"]
-            dcm2nii_MR(mr_dir, nii_out_path)
-
-        if 'PT' in modalities:
-            pet_dir = modalities["PT"]
+        if 'T1' in modalities:
+            mr_dir = modalities["T1"]
+            dcm2nii_MR(mr_dir, nii_out_path,'T1')
+        """    
+        if 'T2' in modalities:
+            mr_dir = modalities["T2"]
+            dcm2nii_MR(mr_dir, nii_out_path,'T2')
+        if 'DWI1' in modalities:
+            mr_dir = modalities["DWI1"]
+            dcm2nii_MR(mr_dir, nii_out_path,'DWI1')            
+        if 'DWI2' in modalities:
+            mr_dir = modalities["DWI2"]
+            dcm2nii_MR(mr_dir, nii_out_path,'DWI2')
+        """
+        if 'PET' in modalities:
+            pet_dir = modalities["PET"]
             dcm2nii_PET(pet_dir, nii_out_path)
         
-        """
+        
         if 'SEG' in modalities:
             seg_dir = modalities["SEG"]
             dcm2nii_mask(seg_dir, nii_out_path)
-            resample_mask(nii_out_path)
+            #resample_mask(nii_out_path)
 
         #TODO deal with existing nii masks.
         if 'SEGnii' in modalities:
             seg_nii_dir = modalities["SEGnii"]
             process_existing_mask(seg_nii_dir, nii_out_path)
+            #resample_mask(nii_out_path)
+         
+        #Doesn't need to be done for every case, and does not handle every modality actually
+        fixxfrm(nii_out_path,'T1.nii.gz')
+
+        if 'SEG' in modalities or 'SEGnii' in modalities:
             resample_mask(nii_out_path)
-        """
+
         resample_ct(nii_out_path)
         resample_mr(nii_out_path)
+        
+
 
 def closest_unitary(A): 
     """ Calculate the unitary matrix U that is closest with respect to the 
@@ -342,21 +406,44 @@ def fixxfrm(nii_path,nii_file):
     #idea 6702-500 just subtract affine part of transform into PET. Zero out affine in MR
     mr = nib.load(str(nii_path/'T1.nii.gz'))
     mraffine = mr.affine
-
+    
+    #PET and SUV must be corrected.
     pet = nib.load(str(nii_path/'PET.nii.gz')) 
     petaffine = pet.affine
     petaffine[:3,3] = petaffine[:3,3] - mraffine[:3,3] #subtract MR translation from PET translation  
     petd = np.asanyarray(pet.dataobj)
     nipet = nib.Nifti1Image(petd,petaffine)   
-    nib.save(nipet, nii_path/('fixed_PET.nii.gz'))
+    nib.save(nipet, nii_path/('PET.nii.gz'))
+    #Now SUV
+    pet = nib.load(str(nii_path/'SUV.nii.gz')) 
+    petaffine = pet.affine
+    petaffine[:3,3] = petaffine[:3,3] - mraffine[:3,3] #subtract MR translation from SUV translation  
+    petd = np.asanyarray(pet.dataobj)
+    nipet = nib.Nifti1Image(petd,petaffine)   
+    nib.save(nipet, nii_path/('SUV.nii.gz'))
 
-    
     mraffine[:3,3] = [0,0,0]    #nuke MR translation, which fixes non-orthonormal junk when trying to open.
-
     mrd = np.asanyarray(mr.dataobj)
     nimr = nib.Nifti1Image(mrd,mraffine)
-    nib.save(nimr, nii_path/('fixed_MR.nii.gz'))
-
+    nib.save(nimr, nii_path/('T1.nii.gz'))
+    """
+    does not work properly
+    mrmods = ['T1.nii.gz','T2.nii.gz','DWI1.nii.gz','DWI2.nii.gz']
+    for mf in mrmods:
+        mfn = nii_path/mf
+        if os.path.isfile(mfn):
+            mr = nib.load(mfn)
+            mrd = np.asanyarray(mr.dataobj)
+            nimr = nib.Nifti1Image(mrd,mraffine)
+            nib.save(nimr, mfn)
+    """
+    
+    #fix annotations for this file (if exists)
+    if os.path.isfile(str(nii_path/'SEG.nii.gz')):
+        seg = nib.load(str(nii_path/'SEG.nii.gz')) 
+        segd = np.asanyarray(seg.dataobj)
+        niseg = nib.Nifti1Image(segd,mraffine)   
+        nib.save(niseg, nii_path/('SEG.nii.gz'))
 
     return
     #idea 6702-438 just construct affine from dicom header yourself.
@@ -497,28 +584,12 @@ def fixxfrm(nii_path,nii_file):
 
 #keepout list, current cases known to have bad image data in the first place
 blacklist = ['ST_S1_8','ST_S1_14','ST_S1_50','ST_S2_104','ST_S2_110','ST_S3_29','ST_S3_37' ,'ST_S3_38', #resample fail
-             'ST_S1_21','ST_S1_22','ST_S1_17','ST_S1_40', 'ST_S1_89', 'ST_S1_88','ST_S3_29','ST_S1_31','ST_S1_23','ST_S1_37','ST_S1_45','ST_S1_16'] #label fail
-
-
+             'ST_S1_21','ST_S1_22','ST_S1_17','ST_S1_40', 'ST_S1_89', 'ST_S1_88','ST_S3_29','ST_S1_31','ST_S1_23','ST_S1_37','ST_S1_45','ST_S1_16',#] #label fail
+             'ST_S1_12','ST_S1_44','ST_S3_49']#processed already
+blacklist = []
 if __name__ == "__main__":
     
-    bd1 = '/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task600_MICCAI_Data/Lymphoma_Cases_Feb_5_2024/'
-    bd2 = '/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Lyphoma_Dataset_unprocessed/Unlabeled_cases_Feb_5_2024/'
-    fix_dirs = [
-                    plb.Path(bd2+'ST_S3_33_BL'),
-                    plb.Path(bd2+'ST_S3_36_BL'),
-                    plb.Path(bd2+'ST_S3_82_BL'),
-                    plb.Path(bd1+'ST_S1_12_BL'),
-                    plb.Path(bd1+'ST_S1_44_BL'),
-                    plb.Path(bd1+'ST_S3_49_BL'),
-                    plb.Path(bd2+'ST_S3_9_BL')
-                    ]   
-    cpts = [('_MR','T1.nii.gz'),('_PT','PET.nii.gz')]
-    for p in fix_dirs:
-        #for f in cpts:
-        #    fixxfrm(p,f[1])
-        fixxfrm(p,cpts[0][1])
-    exit()
+
     
     path_to_data = plb.Path(sys.argv[1])  # path to downloaded TCIA DICOM database, e.g. '.../FDG-PET-CT-Lesions/'
     nii_out_root = plb.Path(sys.argv[2])  # path to the to be created NiFTI files, e.g. '...tcia_nifti/FDG-PET-CT-Lesions/')
@@ -528,11 +599,59 @@ if __name__ == "__main__":
     #dicom2nifti.settings.enable_resampling()
     #dicom2nifti.settings.set_resample_spline_interpolation_order(1)
     #dicom2nifti.settings.set_resample_padding(-1000)
-    #study_dirs = find_studies(path_to_data)
+    study_dirs = find_studies(path_to_data)
     candidate_dirs = []
     for s in study_dirs:
         if not any([b in str(s) for b in blacklist]):
             candidate_dirs.append(s)
+    #convert_tcia_to_nifti(candidate_dirs, nii_out_root)
+    convert_tcia_to_nifti(study_dirs, nii_out_root)
+    exit()
     #candidate_dirs = candidate_dirs[31:]
-    candidate_dirs = [plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_33_BL/')]
-    convert_tcia_to_nifti(candidate_dirs, nii_out_root)
+    """
+    candidate_dirs = [plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Lymphoma_Cases_Feb_5_2024/ST_S1_12_BL'),
+                      plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Lymphoma_Cases_Feb_5_2024/ST_S1_44_BL'),
+                      plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Lymphoma_Cases_Feb_5_2024/ST_S3_49_BL')
+                      ]
+    """
+    """
+    #fix bad nifti files
+    candidate_dirs = [plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_9_BL'),
+                      plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_33_BL'),
+                      plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_36_BL'),
+                      plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/MICCAI24/Unlabeled_cases_Feb_5_2024/ST_S3_82_BL')
+                      ]; nii_out_root =   plb.Path("/home/king/Data/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Lyphoma_Dataset_unprocessed"  )
+    """
+    #fix bad segmentation transforms NOTE: This does not fix badsegmentations at all. They remain flipped.
+    p = plb.Path('/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task600_MICCAI_Data/Lymphoma_Cases_Feb_5_2024/')
+    study_dirs = [f for f in p.iterdir() if f.is_dir()]
+    fix_dirs = []
+    for s in study_dirs:
+        if not any([b in str(s) for b in blacklist]):
+            fix_dirs.append(s)
+    cpts = [('_MR','T1.nii.gz'),('_PT','PET.nii.gz')]
+    for p in fix_dirs:
+        fixxfrm(p,cpts[0][1])
+    exit()
+    #end fix bad segmentation transforms        
+ 
+
+    exit()
+    #fix known bad DICOM orientations
+    bd1 = '/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Task600_MICCAI_Data/Lymphoma_Cases_Feb_5_2024/'
+    bd2 = '/media/king/4TB_B/Lymphoma_Data_Cache/nnUNet_raw_data_base/nnUNet_raw_data/Lyphoma_Dataset_unprocessed/Unlabeled_cases_Feb_5_2024/'
+    fix_dirs = [
+                    plb.Path(bd1+'ST_S1_12_BL'),
+                    plb.Path(bd1+'ST_S1_44_BL'),
+                    plb.Path(bd1+'ST_S3_49_BL'),
+                    plb.Path(bd2+'ST_S3_9_BL'),
+                    plb.Path(bd2+'ST_S3_33_BL'),
+                    plb.Path(bd2+'ST_S3_36_BL'),
+                    plb.Path(bd2+'ST_S3_82_BL'),
+                    ]   
+    cpts = [('_MR','T1.nii.gz'),('_PT','PET.nii.gz')]
+    for p in fix_dirs:
+        #for f in cpts:
+        #    fixxfrm(p,f[1])
+        fixxfrm(p,cpts[0][1])
+    exit()
